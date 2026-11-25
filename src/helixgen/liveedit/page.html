@@ -372,6 +372,9 @@ body.down main{opacity:.55}
 .tile .ti-byp{flex:none;width:9px;height:9px;border-radius:50%;background:var(--ok);box-shadow:0 0 7px var(--ok)}
 .tile.off .ti-byp{background:#3a2020;box-shadow:none}
 .tile .ti-dir{flex:none;font-size:13px;font-weight:800;width:10px;text-align:center}
+.tile .ti-meter{flex:none;width:44px;height:7px;border-radius:3px;background:#0f1218;border:1px solid var(--edge2);overflow:hidden;position:relative}
+.tile .ti-meter-fill{position:absolute;left:0;top:0;bottom:0;width:0;background:linear-gradient(90deg,var(--ok),#e8d44b 80%,#ffcf4a);transition:width .08s linear}
+.tile .ti-meter.clip .ti-meter-fill{background:var(--bad);width:100%!important}
 .tile.drag{opacity:.4}
 .tile.dropbefore{box-shadow:0 -3px 0 0 var(--wire),0 4px 14px rgba(0,0,0,.3)}
 .tile.dropafter{box-shadow:0 3px 0 0 var(--wire),0 4px 14px rgba(0,0,0,.3)}
@@ -616,6 +619,8 @@ const NS = "http://www.w3.org/2000/svg";
 const ME = Math.random().toString(36).slice(2) + Date.now().toString(36);
 const $ = (id) => document.getElementById(id);
 let S = null;                     // last full state from the server
+let meterTimer = null;            // I/O meter poll handle (flow pane only)
+const METER_POLL_MS = 120;        // I/O meter poll cadence
 const P = new Map();              // "path/block/pid" -> control {p, b, tag, dev, set, fail}
 const B = new Map();              // "path/block"     -> control {b, tag, dev, set, fail}
 let dragging = null;              // key of the knob under the user's hand
@@ -1292,6 +1297,8 @@ function tileEl(b) {
   } else {
     t.append(el("span", "ti-cat", catLabel(b.category)), el("span", "ti-nm", b.name || b.model || ""));
     t.append(el("span", "ti-dir"));                        // adjective-search arrow slot
+    if (b.category === "input" || b.category === "output")
+      { const m = el("span", "ti-meter ti-meter-" + (b.category === "input" ? "in" : "out")); m.append(el("span", "ti-meter-fill")); t.append(m); }
     if (!NO_BYPASS.has(b.category)) t.append(el("span", "ti-byp"));
   }
   t.title = b.model || b.name || "";
@@ -1422,6 +1429,7 @@ function showPane(id) {
   // The signal-flow chrome (snapshots, adjective search, Undo/Redo) belongs to
   // the flow pane: hide it and neuter undo/redo on another pane so a shortcut
   // can't revert a hidden edit. A pane with no edit history of its own.
+  flow ? startMeterPoll() : stopMeterPoll();   // I/O meters run only on the flow pane
   document.body.classList.toggle("pane-other", !flow);
   $("undo").disabled = !flow || down || !undoS.length;
   $("redo").disabled = !flow || down || !redoS.length;
@@ -2211,6 +2219,28 @@ function tunerOnShow(active) {
   tunerTimer = setInterval(tunerPoll, TUNER_POLL_MS);
 }
 addPane({ id: "tuner", label: "Tuner", el: () => $("tunerpane"), onShow: tunerOnShow });
+
+/* I/O metering: poll the always-on 2003 meter stream while the flow pane is
+ * shown + connected, and drive the input/output tiles' level bars (parity with
+ * the Stadium editor's I/O meters). Read-only — no device writes. */
+async function meterPoll() {
+  if (down || activePane !== "flow") return;
+  const cv = $("flowcanvas"); if (!cv) return;
+  const bars = cv.querySelectorAll(".ti-meter");
+  if (!bars.length) return;                           // no input/output tiles rendered
+  let r = null;
+  try { r = await fetch("/meters/reading").then((x) => x.json()); } catch (e) { return; }
+  const paint = (sel, lvl, clip) => cv.querySelectorAll(sel).forEach((m) => {
+    const f = m.querySelector(".ti-meter-fill"); if (!f) return;
+    m.classList.toggle("clip", !!clip);
+    f.style.width = (Math.max(0, Math.min(1, lvl || 0)) * 100) + "%";
+  });
+  if (r && !r.stale) { paint(".ti-meter-in", r.input, r.clip_in); paint(".ti-meter-out", r.output, r.clip_out); }
+  else { paint(".ti-meter-in", 0, false); paint(".ti-meter-out", 0, false); }
+}
+function startMeterPoll() { if (!meterTimer) meterTimer = setInterval(meterPoll, METER_POLL_MS); }
+function stopMeterPoll() { if (meterTimer) { clearInterval(meterTimer); meterTimer = null; } }
+startMeterPoll();                                   // the flow pane is shown first
 
 /* ---------- Device Info pane (81v.11): read-only identity strip --------------
  * The connected device's identity / firmware / storage (GET /device/info over

@@ -332,6 +332,15 @@ def make_server(session: LiveSession, host: str = "127.0.0.1",
                 except Exception as e:  # noqa: BLE001 — telemetry hiccup must not 500 raw
                     logger.exception("live editor: tuner reading failed")
                     self._json(500, {"error": f"{type(e).__name__}: {e}"})
+            elif path == "/meters/reading":
+                # I/O metering (Focus-View parity): latest input/output levels
+                # off the always-on 2003 meter stream. Read-only; polled while
+                # the flow pane is open.
+                try:
+                    self._json(200, session.meters_reading())
+                except Exception as e:  # noqa: BLE001 — telemetry hiccup must not 500 raw
+                    logger.exception("live editor: meters reading failed")
+                    self._json(500, {"error": f"{type(e).__name__}: {e}"})
             # Device Info pane (81v.11): the device's read-only identity / firmware
             # / storage (/ProductInfoGet). Read-only; read on demand.
             elif path == "/device/info":
