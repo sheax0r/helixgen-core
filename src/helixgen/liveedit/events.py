@@ -105,6 +105,13 @@ def decode_event(addr: str, args: list) -> Optional[tuple]:
     """One 2001 event -> an action tuple, or ``None`` if it is not ours."""
     try:
         if addr == "/setParamValue" and len(args) >= 7:
+            # args[4] is the model SUB-position (HW-confirmed 2026-11-25: 0 for
+            # the primary model, 1 for a dual-cab 2nd cab). A sub!=0 echo belongs
+            # to the 2nd cab, which rides the dedicated scparam path — NOT the
+            # primary _params[(path,block,pid)], where it would clobber the 1st
+            # cab's identical pid and yank every page's knob. Drop it here.
+            if _int(args[4]) != 0:
+                return None
             value = args[6]
             if isinstance(value, bool):
                 value = 1.0 if value else 0.0

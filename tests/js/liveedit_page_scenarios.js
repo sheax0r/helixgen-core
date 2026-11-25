@@ -1032,6 +1032,39 @@ const drag = (k, id, ...ys) => { k.svg.fire("pointerdown", { button: 0, clientY:
     ok("S43 and sends no move", !y.posts.find((p) => p.url === "/move-into-split"), "unexpected /move-into-split");
   }
 
+  { // S44: dual-cab 2nd-cab param is EDITABLE — its knob writes /second-cab-param
+    //      (sub=1), keyed path/block/s1/pid so it never collides with the 1st cab's
+    //      identical pids (previously the 2nd cab was shown read-only, hgc-5gh).
+    const x = boot();
+    x.sse(State([Blk({ block: 1, category: "cab", name: "Cab",
+      second_model: { name: "Cab B", model: "HD2_X", model_id: 453, read_only: false,
+        params: [{ pid: 4, name: "Angle", label: "Angle", type: "f", ctl: "knob",
+                   value: 45, min: 0, max: 90, default: 45, internal: false }] } },
+      [{ pid: 4, name: "Level", label: "Level", type: "f", ctl: "knob",
+         value: 5, min: 0, max: 10, default: 5, internal: false }])]));
+    const k = x.knobOf("0/1/s1/4");
+    ok("S44 the 2nd cab renders an editable knob (not read-only)", !!(k && k.root), "no 2nd-cab knob");
+    k.root.fire("keydown", { key: "ArrowUp" });
+    const req = x.posts.find((p) => p.url === "/second-cab-param");
+    ok("S44 the 2nd-cab knob writes /second-cab-param with its own pid",
+      !!req && req.body.path === 0 && req.body.block === 1 && req.body.pid === 4, JSON.stringify(req && req.body));
+    ok("S44 the 1st cab's identical pid 4 is untouched (no /param leak)",
+      !x.posts.find((p) => p.url === "/param" && p.body.pid === 4), "leaked to the 1st cab");
+    // undo regression (applyHist fix): undoing the scparam edit must revert the
+    // 2nd-cab knob, NOT fall through to the 1st cab's identical pid.
+    if (req) req.reply(200, { ok: true, value: req.body.value });
+    await x.tick();
+    ok("S44 the scparam edit left one scparam undo entry",
+      x.api.undoS.length === 1 && x.api.undoS[0].kind === "scparam", JSON.stringify(x.api.undoS));
+    x.api.undo();
+    ok("S44 undo reverts the 2nd-cab knob to 45", x.api.P.get("0/1/s1/4").p.value === 45,
+      x.api.P.get("0/1/s1/4").p.value);
+    ok("S44 undo did NOT touch the 1st cab's pid-4 knob (still 5)",
+      x.api.P.get("0/1/4").p.value === 5, x.api.P.get("0/1/4").p.value);
+    ok("S44 the undo write went to /second-cab-param",
+      x.posts.filter((p) => p.url === "/second-cab-param").length === 2, "undo wrote elsewhere");
+  }
+
   console.log(fails ? `\n${fails} FAILED` : "\nall page scenarios pass");
   process.exit(fails ? 1 : 0);
 })();

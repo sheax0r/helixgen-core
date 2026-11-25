@@ -73,6 +73,15 @@ def _route(session: LiveSession, path: str, b: dict):
         return session.set_param(_int(b, "path"), _int(b, "block"),
                                  _int(b, "pid"), v, client=_client(b),
                                  rev=_rev(b))
+    if path == "/second-cab-param":
+        if "value" not in b:
+            raise LiveError("missing field 'value'")
+        v = b["value"]
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            raise LiveError("field 'value' must be a number")
+        return session.set_second_cab_param(
+            _int(b, "path"), _int(b, "block"), _int(b, "pid"), v,
+            client=_client(b))
     if path == "/bypass":
         if not isinstance(b.get("enabled"), bool):
             raise LiveError("field 'enabled' must be true or false")

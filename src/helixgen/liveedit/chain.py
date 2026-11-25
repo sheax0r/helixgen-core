@@ -184,7 +184,7 @@ def _block(path: int, slot: int, raw: dict) -> Optional[dict]:
                 "model": model1 or str(mid1),
                 "name": name1 or _fallback_name(model1, mid1),
                 "params": _params(mid1, model1, m1),
-                "read_only": True,
+                "read_only": False,   # 2nd-cab params are writable via sub=1 (hgc-5gh resolved 2026-11-25)
             }
     return block
 
