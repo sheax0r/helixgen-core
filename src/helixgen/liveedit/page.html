@@ -325,6 +325,14 @@ body.down .eqsvg{opacity:.5;pointer-events:none}
 .k .cap{fill:#232937;stroke:#0c0e13;stroke-width:1.5}
 .k .ptr{stroke:#f4f6fb;stroke-width:2.5;stroke-linecap:round}
 .k.drag .cap{fill:#2c3446}
+.sld{width:108px;text-align:center;position:relative;border-radius:10px;outline:none}
+.sld svg{display:block;margin:6px auto 2px;cursor:ew-resize;touch-action:none}
+.sld:focus-visible{box-shadow:0 0 0 2px #5b8cff}
+.sld .strack{fill:#272d3a}
+.sld .sfill{fill:var(--acc);filter:drop-shadow(0 0 3px var(--acc))}
+.sld .shandle{fill:#f4f6fb}
+.sld.drag .shandle{fill:#fff}
+.hl-on .sfill{fill:var(--wire)!important} .hl-up .sfill{fill:var(--up)!important} .hl-down .sfill{fill:var(--down)!important}
 .val{font-size:12px;font-weight:700;margin-top:3px;font-variant-numeric:tabular-nums;white-space:nowrap}
 .lab{font-size:9.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.07em;margin-top:1px;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -523,6 +531,7 @@ body.pane-other #focus{display:none}
   <span class="chip dirty" title="the tone has changes that are not saved on the device">Unsaved</span>
   <button class="btn" id="undo" title="Undo (Ctrl/Cmd+Z)" disabled>Undo</button>
   <button class="btn" id="redo" title="Redo (Ctrl/Cmd+Shift+Z)" disabled>Redo</button>
+  <button class="btn" id="knobview" title="Switch between knobs and sliders for the controls">Sliders</button>
   <button class="btn" id="libtoggle" title="Browse the tone library and the device's presets">&#8801; Library</button>
   <button class="btn" id="load" title="Load a different preset from the device">Load…</button>
   <button class="btn" id="reread" title="Read the whole tone from the device again">Re-read</button>
@@ -636,6 +645,9 @@ let lensLock = null;             // {x,y}: the two param keys an amp-lens drag h
 const paramLocked = (key) => dragging === key
   || (lensLock != null && (lensLock.x === key || lensLock.y === key));
 let down = true;                  // device (or server) unreachable: nothing is writable
+// knob vs slider rendering of continuous params (Stadium editor parity). Persisted
+// so the choice survives reloads; continuous params only — toggles/selects unaffected.
+let KNOBVIEW = (() => { try { return localStorage.getItem("hx.knobview") === "sliders" ? "sliders" : "knobs"; } catch (e) { return "knobs"; } })();
 let undoS = [], redoS = [];
 const openInternal = new Set();   // blocks whose "internal" row the user expanded
 
@@ -919,6 +931,68 @@ function select(p, b, key, kind) {
     const v0 = p.value; c.set(clampV(p, +sel.value)); queue(kind, key); record(kind, key, v0, p.value); };
   paint(); return root;
 }
+// A horizontal SLIDER rendering of a continuous param — the Stadium editor's
+// alt widget to the knob (toggled by KNOBVIEW). Isolated from knob() on purpose:
+// it reuses the shared reg/queue/record write path but its own visual + drag, so
+// it cannot regress the knob. Same value model, so echoes/undo/lenses are agnostic.
+function slider(p, b, key, kind) {
+  kind = kind || "param";
+  const W = 96, H = 12;
+  const root = el("div", "sld"); root.tabIndex = 0;
+  root.setAttribute("role", "slider"); root.setAttribute("aria-label", p.label);
+  const svg = sv("svg", { width: W, height: H, viewBox: "0 0 " + W + " " + H });
+  const track = sv("rect", { class: "strack", x: 1, y: H / 2 - 2, width: W - 2, height: 4, rx: 2 });
+  const fill = sv("rect", { class: "sfill", y: H / 2 - 2, height: 4, rx: 2 });
+  const handle = sv("rect", { class: "shandle", y: 0, width: 5, height: H, rx: 2 });
+  svg.append(track, fill, handle);
+  const val = el("div", "val");
+  root.append(svg, val, label(p, b));
+  const lo = shown(p, p.min), hi = shown(p, p.max);
+  const zeroF = (lo < 0 && hi > 0) ? (0 - lo) / (hi - lo) : 0;   // bipolar fills from zero
+  function paint() {
+    const f = Math.max(0, Math.min(1, (p.value - p.min) / span(p)));
+    const x = 1 + f * (W - 2), zx = 1 + zeroF * (W - 2);
+    fill.setAttribute("x", Math.min(x, zx)); fill.setAttribute("width", Math.abs(x - zx));
+    handle.setAttribute("x", Math.max(0, Math.min(W - 5, x - 2.5)));
+    val.textContent = fmt(p, p.value);
+    root.setAttribute("aria-valuemin", shown(p, p.min)); root.setAttribute("aria-valuemax", shown(p, p.max));
+    root.setAttribute("aria-valuenow", shown(p, p.value)); root.setAttribute("aria-valuetext", val.textContent);
+  }
+  const c = reg(key, p, b, root, paint);
+  const live = (v) => { v = clampV(p, v); if (v !== p.value) { c.set(v); queue(kind, key); } };
+  svg.addEventListener("pointerdown", (e) => {
+    if (e.button || dragging || down) return;
+    e.preventDefault(); root.focus();
+    try { svg.setPointerCapture(e.pointerId); } catch (x) { /* synthetic */ }
+    const id = e.pointerId, v0 = p.value;
+    let lastX = e.clientX, acc = p.value;            // relative drag, like the knob
+    dragging = key; root.classList.add("drag");
+    const move = (m) => { if (m.pointerId !== id) return;
+      acc += (m.clientX - lastX) / (m.shiftKey ? 900 : 130) * span(p);
+      acc = Math.max(p.min, Math.min(p.max, acc)); lastX = m.clientX; live(acc); };
+    const up = (m) => { if (m && m.pointerId !== undefined && m.pointerId !== id) return;
+      svg.removeEventListener("pointermove", move);
+      ["pointerup", "pointercancel", "lostpointercapture"].forEach((n) => svg.removeEventListener(n, up));
+      root.classList.remove("drag"); if (dragging === key) dragging = null;
+      if (p.value !== v0) { queue(kind, key); record(kind, key, v0, p.value); } };
+    svg.addEventListener("pointermove", move);
+    ["pointerup", "pointercancel", "lostpointercapture"].forEach((n) => svg.addEventListener(n, up));
+  });
+  svg.addEventListener("dblclick", () => {
+    if (down || p.default == null) return; const v0 = p.value; live(p.default); record(kind, key, v0, p.value); });
+  root.addEventListener("keydown", (e) => {
+    if (down || e.metaKey || e.ctrlKey || e.altKey) return;
+    const step = (p.type === "i" ? 1 : span(p) / 100) * (e.shiftKey ? 10 : 1);
+    let v = null;
+    if (e.key === "ArrowUp" || e.key === "ArrowRight") v = p.value + step;
+    else if (e.key === "ArrowDown" || e.key === "ArrowLeft") v = p.value - step;
+    else if (e.key === "Home") v = p.min; else if (e.key === "End") v = p.max;
+    else if (e.key === "Delete" || e.key === "Backspace") v = p.default;
+    if (v == null) return;
+    e.preventDefault(); const v0 = p.value; live(v); record(kind, key, v0, p.value, "key");
+  });
+  paint(); return root;
+}
 function control(p, b, kind) {
   kind = kind || "param";
   // scparam (dual-cab 2nd cab) keys as path/block/s1/pid so its pids never
@@ -926,8 +1000,9 @@ function control(p, b, kind) {
   const key = kind === "scparam"
     ? b.path + "/" + b.block + "/s1/" + p.pid
     : b.path + "/" + b.block + "/" + p.pid;
-  return p.ctl === "toggle" ? toggle(p, b, key, kind)
-    : p.ctl === "select" ? select(p, b, key, kind) : knob(p, b, key, kind);
+  if (p.ctl === "toggle") return toggle(p, b, key, kind);
+  if (p.ctl === "select") return select(p, b, key, kind);
+  return KNOBVIEW === "sliders" ? slider(p, b, key, kind) : knob(p, b, key, kind);
 }
 
 /* ---------- amp lens: a 2D pad over the amp's Drive × Level (81v.1) ---------
@@ -3187,6 +3262,13 @@ async function openAddPicker(path) {
 addEventListener("keydown", (ev) => { if (ev.key === "Escape") closeOverlay(); });
 $("load").onclick = openPicker;
 $("undo").onclick = undo; $("redo").onclick = redo;
+function syncKnobView() { $("knobview").textContent = KNOBVIEW === "sliders" ? "Knobs" : "Sliders"; }
+$("knobview").onclick = () => {
+  KNOBVIEW = KNOBVIEW === "sliders" ? "knobs" : "sliders";
+  try { localStorage.setItem("hx.knobview", KNOBVIEW); } catch (e) { /* private mode */ }
+  syncKnobView(); renderFocus();        // rebuild the focused block's controls in the new form
+};
+syncKnobView();
 $("snap").onclick = snapToggle; $("snap").title = "Manage snapshots";
 $("snapclose").onclick = snapClose; $("snappanel").hidden = true;
 $("reread").onclick = () => send("/reread", {}, () => toast("Re-read from the device", true), () => {});
