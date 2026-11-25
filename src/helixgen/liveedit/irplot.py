@@ -21,6 +21,10 @@ from typing import List, Tuple
 # Cap the transform size: a cab IR's meaningful part is short, and this bounds
 # the pure-Python FFT's cost regardless of an oversized source file.
 _MAX_N = 16384
+# Bound the READ too: a real cab IR is a fraction of a second, but mapping.json
+# could point at an arbitrary user .wav. Reading at most this many frames caps
+# memory/time on a pathological file (we only FFT _MAX_N samples anyway).
+_MAX_FRAMES = 1 << 20   # ~22 s at 48 kHz — far beyond any real IR
 _MIN_HZ = 20.0
 _MAX_HZ = 20000.0
 _SMOOTH_OCT = 1.0 / 6.0   # fractional-octave smoothing width (each side)
@@ -42,9 +46,11 @@ def read_wav_mono(path: Path | str) -> Tuple[List[float], int]:
             ch = w.getnchannels()
             sw = w.getsampwidth()
             rate = w.getframerate()
-            n = w.getnframes()
+            n = min(w.getnframes(), _MAX_FRAMES)
             raw = w.readframes(n)
-    except (wave.Error, EOFError) as e:
+    except (wave.Error, EOFError, OSError) as e:
+        # OSError covers the COMMON case of a stale mapping.json entry whose .wav
+        # was moved/deleted (resolve_by_hash doesn't stat), plus a dir/perm miss.
         raise IrReadError(f"not a readable PCM wav: {e}") from e
     if ch < 1 or rate <= 0 or sw not in (1, 2, 3, 4):
         raise IrReadError(f"unsupported wav: {ch}ch {sw*8}bit {rate}Hz")
@@ -131,6 +137,7 @@ def frequency_response(samples: List[float], rate: int, *, points: int = 160) ->
     """
     if rate <= 0 or not samples:
         return {"freq": [], "db": [], "rate": rate}
+    points = max(2, points)                            # guard /(points-1)
     n = min(_next_pow2(len(samples)), _MAX_N)
     buf = samples[:n] + [0.0] * (n - len(samples)) if len(samples) < n else samples[:n]
     spec = fft([complex(v, 0.0) for v in buf])

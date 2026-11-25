@@ -103,6 +103,33 @@ def test_read_wav_float_is_rejected(tmp_path):
         irplot.read_wav_mono(p)
 
 
+def test_read_wav_missing_file_is_irreaderror(tmp_path):
+    # the common real case: a stale mapping.json entry whose .wav was deleted.
+    # must surface as IrReadError, not an uncaught OSError (adversarial finding).
+    with pytest.raises(irplot.IrReadError):
+        irplot.read_wav_mono(tmp_path / "nope.wav")
+
+
+def test_read_wav_directory_is_irreaderror(tmp_path):
+    with pytest.raises(irplot.IrReadError):
+        irplot.read_wav_mono(tmp_path)              # IsADirectoryError -> IrReadError
+
+
+def test_read_wav_caps_frames(tmp_path, monkeypatch):
+    # a pathologically long file must not be read whole: capped at _MAX_FRAMES
+    monkeypatch.setattr(irplot, "_MAX_FRAMES", 100)
+    p = tmp_path / "long.wav"
+    _write_wav(p, [0.0] * 5000)
+    samples, _ = irplot.read_wav_mono(p)
+    assert len(samples) == 100
+
+
+def test_frequency_response_points_floor():
+    # points < 2 would divide by zero; it must be floored, not crash
+    resp = irplot.frequency_response([1.0] + [0.0] * 255, 48000, points=1)
+    assert len(resp["freq"]) == len(resp["db"]) >= 2
+
+
 def test_frequency_response_impulse_is_flat():
     # a unit impulse has a flat magnitude response -> ~0 dB across the band
     sig = [1.0] + [0.0] * 2047

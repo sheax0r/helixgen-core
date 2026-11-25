@@ -102,6 +102,15 @@ def test_ir_response_unreadable_wav(monkeypatch, tmp_path):
     assert out["error"] == "unreadable"
 
 
+def test_ir_response_stale_mapping_missing_file(monkeypatch, tmp_path):
+    # mapping resolves (resolve_by_hash doesn't stat) but the .wav is gone:
+    # must return the friendly "unreadable" note, not raise FileNotFoundError.
+    _patch_mapping(monkeypatch, _FakeMapping(path=tmp_path / "deleted.wav"))
+    out = _sess().ir_response(0, 1)
+    assert out["error"] == "unreadable"
+    assert "reason" in out
+
+
 def test_ir_response_non_ir_block_raises():
     sess = LiveSession(FakeClient(), lease=FakeLease())   # default rig: amp at slot 2
     sess.load()
