@@ -1351,6 +1351,16 @@ function blockEl(b) {
     dc.onclick = () => openSecondCabPicker(b, null);
     hd.append(dc);
   }
+  // convert mono↔stereo in place — swap to the twin model, keeping settings
+  // (Stadium parity). Only for a block whose model comes in both forms.
+  if (b.ms_form === "mono" || b.ms_form === "stereo") {
+    const to = b.ms_form === "mono" ? "Stereo" : "Mono";
+    const ms = el("button", "splitbtn", "⇄ " + to);
+    ms.type = "button"; ms.title = "Convert this block to its " + to + " version, keeping settings";
+    ms.onclick = () => structSend("/convert-mono-stereo", { path: b.path, block: b.block },
+      "Converting to " + to + "…");
+    hd.append(ms);
+  }
   // copy this block to the paste clipboard (model + params + bypass + 2nd cab).
   // Paste (header button) appends a duplicate on the focused path.
   if (!STRUCT.has(b.category) && b.category !== "input" && b.category !== "output") {

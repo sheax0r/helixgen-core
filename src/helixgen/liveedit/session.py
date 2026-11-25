@@ -839,6 +839,50 @@ class LiveSession:
         self.load()                              # re-read: new model + its params
         return self.public_state()
 
+    def convert_mono_stereo(self, path: int, block: int) -> dict:
+        """Convert a block to its mono↔stereo twin in place (Stadium's "convert
+        mono/stereo", keeping settings).
+
+        A twin is the same effect in the opposite channel count (e.g. a Mono
+        delay ↔ its Stereo version), a same-category model swap. `swap_model`
+        applies the twin's DEFAULTS, so this captures the source params first and
+        re-applies the ones the twin shares — matched by NAME, because the pid
+        for a given param differs between the two models. A stereo-only param
+        (e.g. Spread) keeps its default; going mono→stereo a few params with a
+        narrower stereo range (a long delay Time — stereo uses ~2× memory, so
+        its max is lower) are clamped to that range, as on the hardware.
+        Controller/snapshot assignments are not carried (Stadium drops them
+        too). Volatile until Save; confirm on the rig."""
+        pth, blk = int(path), int(block)
+        with self.cond:
+            self._require_up()
+            cur = self._blocks.get((pth, blk)) if self._blocks else None
+        if cur is None:
+            raise LiveError("no such block on the loaded tone "
+                            "(did the preset change?)", status=404)
+        twin = defs.mono_stereo_twin(cur.get("model_id"))
+        if twin is None:
+            raise LiveError("this block has no mono/stereo twin to convert to "
+                            "(only effects that come in both forms can).",
+                            status=400)
+        # capture the source's values by PARAM NAME (pids differ across the twin)
+        by_name = {p.get("name"): p.get("value")
+                   for p in (cur.get("params") or []) if p.get("name") is not None}
+        self.swap_model(pth, blk, twin)          # applies the twin's defaults
+        for nm, meta in defs.model_params_for(twin).items():
+            if nm in by_name and isinstance(meta, dict) and meta.get("id") is not None:
+                try:
+                    self.set_param(pth, blk, int(meta["id"]), by_name[nm])
+                except LiveError as e:
+                    # a pid the twin lacks (404) is a benign skip; a genuine
+                    # device failure (502) must SURFACE, not silently drop the
+                    # rest while reporting a clean convert (cf. paste_block).
+                    if e.status not in (400, 404):
+                        raise
+                except (TypeError, ValueError):
+                    pass                         # a malformed captured value: skip
+        return self.public_state()
+
     def set_second_cab(self, path: int, block: int, model_id: int) -> dict:
         """Place or replace the dual-cab SECOND cab at a cab block's slot — the
         app's "Dual" cab — via ``/ModelSet`` with ``sub=1`` (HW-confirmed
