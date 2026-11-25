@@ -160,6 +160,22 @@ class FakeClient:
                         mdls[1] = {"id__": int(model_id)}
         else:
             self.swaps.append((int(path), int(block), int(model_id)))
+            if not self.model_noop:              # reflect the add/swap so a verify re-read sees it
+                raw = self._raw_at(int(path), int(block))
+                if raw is not None:              # occupied slot -> swap the model
+                    mdls = raw.setdefault("mdls", [{}])
+                    if mdls:
+                        mdls[0] = {"id__": int(model_id), "enbl": 1, "parm": []}
+                    else:
+                        mdls.append({"id__": int(model_id), "enbl": 1, "parm": []})
+                else:                            # empty slot -> ADD the block
+                    flow = (self.eb.get("sfg_") or {}).get("flow") or []
+                    if 0 <= int(path) < len(flow):
+                        blks = flow[int(path)].setdefault("blks", [])
+                        if isinstance(blks, list):
+                            blks += [int(block),
+                                     {"enbl": 1, "mdls": [{"id__": int(model_id),
+                                                           "enbl": 1, "parm": []}]}]
         return self.ack
 
     def _raw_at(self, path, slot):

@@ -978,7 +978,73 @@ class LiveSession:
                                     status=502) from e
         finally:
             self.lease.done()
+        self._last_add = (pth, slot)             # the exact slot used, for paste_block
         self.load()                              # re-read: the appended block
+        return self.public_state()
+
+    def paste_block(self, path: int, spec: dict) -> dict:
+        """Paste a copied block onto DSP ``path`` (Stadium's block copy/paste):
+        add the model, then reproduce its params, bypass and — for a dual cab —
+        the 2nd model + its params.
+
+        The block APPENDS at the next free row-0 slot, because the engine has no
+        insert-and-shift primitive (``move_block`` SWAPS, it does not shift); the
+        user repositions it afterwards by dragging. ``spec`` is a block capture:
+        ``{model_id, params:[{pid,value}], enabled, second_model?:{model_id,
+        params:[...]}}``. A pid the pasted model doesn't expose is skipped rather
+        than failing the whole paste. Volatile until Save.
+        """
+        if not isinstance(spec, dict):
+            raise LiveError("paste spec must be an object", status=400)
+        try:
+            model_id = int(spec["model_id"])
+        except (KeyError, TypeError, ValueError):
+            raise LiveError("paste spec needs a model_id", status=400) from None
+
+        self._last_add = None
+        self.add_block(path, model_id)           # appends + re-reads (guards addable)
+        last = self._last_add                    # the exact slot add_block used (no fragile diff)
+        if not last or last[0] != int(path):
+            raise LiveError("the block was added but the chain changed underneath "
+                            "the paste — re-read, then set its controls, or remove "
+                            "the added block.", status=409)
+        slot = last[1]
+
+        # A pid the pasted model doesn't expose (404) or a malformed clipboard
+        # entry (400) is skipped; a genuine device failure (502) must SURFACE —
+        # a paste that silently drops half its params after a mid-write
+        # disconnect would otherwise report success.
+        def _skippable(e: LiveError) -> bool:
+            return e.status in (400, 404)
+
+        for p in spec.get("params") or []:
+            try:
+                self.set_param(path, slot, int(p["pid"]), p["value"])
+            except LiveError as e:
+                if not _skippable(e):
+                    raise
+            except (KeyError, TypeError, ValueError):
+                pass
+        sm = spec.get("second_model")
+        if isinstance(sm, dict) and sm.get("model_id") is not None:
+            try:
+                self.set_second_cab(path, slot, int(sm["model_id"]))
+            except LiveError as e:
+                if not _skippable(e):            # non-cab primary (400) skips; device failure surfaces
+                    raise
+            except (TypeError, ValueError):
+                pass
+            else:
+                for p in sm.get("params") or []:
+                    try:
+                        self.set_second_cab_param(path, slot, int(p["pid"]), p["value"])
+                    except LiveError as e:
+                        if not _skippable(e):
+                            raise
+                    except (KeyError, TypeError, ValueError):
+                        pass
+        if spec.get("enabled") is False:
+            self.set_bypass(path, slot, False)   # a failure here surfaces (not swallowed)
         return self.public_state()
 
     def split_block(self, path: int, block: int) -> dict:

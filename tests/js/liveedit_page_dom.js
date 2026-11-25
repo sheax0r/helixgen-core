@@ -68,7 +68,7 @@ function _qsa(root, sel) {
 }
 function boot() {
   const ids = {}; El.body = new El("body");
-  ["led", "preset", "snap", "undo", "redo", "knobview", "reread", "save", "load", "banner", "snaprow", "rig", "toasts",
+  ["led", "preset", "snap", "undo", "redo", "paste", "knobview", "reread", "save", "load", "banner", "snaprow", "rig", "toasts",
    "adjsearch", "adjlist", "adjhint", "libtoggle", "drawer", "drawerbody", "tabs",
    "devicepane", "devtabs", "devnote", "devbody", "devrefresh",
    "ctlpane", "ctlbody", "ctlrefresh", "ctlassign",
