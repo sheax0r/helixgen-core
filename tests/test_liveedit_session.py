@@ -132,6 +132,12 @@ class FakeClient:
             return cid
         return self.pool_of.get(cid)
 
+    def set_harness_param(self, path, block, pid, value, *, ptype="b"):
+        self._next()
+        self.harness_params = getattr(self, "harness_params", [])
+        self.harness_params.append((int(path), int(block), int(pid), value, ptype))
+        return self.ack
+
     def set_param(self, path, block, pid, value, *, force=False, fast=False,
                   ptype=None, sub=0):
         self._next()

@@ -166,6 +166,11 @@ def _block(path: int, slot: int, raw: dict) -> Optional[dict]:
         "xlink": None,
         "params": _params(mid, model, m0),
     }
+    # Trails (spillover): reverb/delay blocks can hold it. The device does NOT
+    # expose the live Trails state (write-only via /HarnessParamValueSet pid 1),
+    # so the editor offers an On/Off SET control, not a readable toggle.
+    if block["category"] in ("delay", "reverb"):
+        block["trails_capable"] = True
     # mono↔stereo twin: if this model comes in both forms, surface its current
     # form so the editor can offer "convert to stereo/mono" (Stadium parity). A
     # model with no twin (amps, cabs, mono/stereo-only effects) carries nothing.

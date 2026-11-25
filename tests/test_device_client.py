@@ -3047,3 +3047,26 @@ def test_remove_command_false_on_error():
     h = HelixClient("10.0.0.99")
     _wire(h, [osc_encode("/error", [("i", 1000), ("i", 0), ("s", "no")])])
     assert h.remove_command(2) is False
+
+
+def test_set_harness_param_wire_format():
+    """`/HarnessParamValueSet [reqid, path, slot, pid, value, -1]` — the
+    harness write decoded from a Stadium-app frida capture (2026-11-25). Same
+    shape as /ParamValueSet but WITHOUT the sub field; the Trails value is an
+    OSC bool (T/F)."""
+    from helixgen.device.osc import parse_osc_message
+    h = HelixClient("10.0.0.99")
+    _wire(h, [osc_encode("/status", [("i", 1000), ("i", 0), ("i", 0)])])
+    assert h.set_harness_param(0, 8, 1, True, ptype="b") is True
+    addr, args, _ = parse_osc_message(h.sock.sent[0])
+    assert addr == "/HarnessParamValueSet"
+    vals = [v for _t, v in args]
+    tags = [t for t, _v in args]
+    assert vals[1:4] == [0, 8, 1]          # path, slot, pid (after the reqid)
+    assert tags[4] == "T"                    # value True as the OSC bool tag
+    assert vals[-1] == -1
+    # Off writes the F tag
+    _wire(h, [osc_encode("/status", [("i", 1001), ("i", 0), ("i", 0)])])
+    h.set_harness_param(0, 8, 1, False, ptype="b")
+    _a, a2, _ = parse_osc_message(h.sock.sent[0])
+    assert [t for t, _v in a2][4] == "F"

@@ -1998,6 +1998,34 @@ class HelixClient:
             return self._ok(self._rpc_fast("/ParamValueSet", args))
         return self._ok(self._rpc("/ParamValueSet", args))
 
+    def set_harness_param(self, path: int, block: int, param_id: int,
+                          value: Any, *, ptype: str = "b") -> bool:
+        """Set a param on a block's fx-HARNESS node:
+        ``/HarnessParamValueSet [_, path, grid_slot, paramId, value, -1]``.
+
+        Same shape as ``/ParamValueSet`` but WITHOUT the ``sub`` field — the
+        harness has no sub-position. Decoded from a frida capture of the Stadium
+        app (2026-11-25) and HW-confirmed (writing harness pid 11 flipped it in
+        the edit buffer and restored). The harness carries the per-block
+        **Trails** control (pid 1, a bool); unlike model params, the Trails
+        state is NOT surfaced in the live edit buffer (it is byte-identical
+        on/off) and there is no ``/HarnessParamValueGet`` — so this is a
+        write-only control from a live read's point of view. ``value`` is
+        encoded by ``ptype`` (``'b'`` → the ``T``/``F`` boolean tags, the Trails
+        case). The device sends NO reply (HW-observed: the RPC returns no
+        frames), so this goes through the FAST path — like a live
+        ``set_param(fast=True)`` — waiting only the brief ack window, not the
+        full ``_rpc`` timeout + 0.4 s settle: ``set_trails`` holds the
+        ``devlock`` across the call, and the longer wait would stall the live
+        re-read loop and every concurrent device op. Returns ``True`` once the
+        send completes; a genuine send failure (connection dropped) raises
+        :class:`HelixError`, which ``set_trails`` surfaces as a 502."""
+        slot = _grid_slot(block)
+        args = [("i", int(path)), ("i", slot), ("i", int(param_id)),
+                self._param_arg(ptype, value), ("i", -1)]
+        self._rpc_fast("/HarnessParamValueSet", args)
+        return True
+
     def _param_type(self, path: int, slot: int, param_id: int) -> Optional[str]:
         """Best-effort defs type of one param (one edit-buffer read); ``None``
         when it cannot be determined — the write then goes out as a float."""

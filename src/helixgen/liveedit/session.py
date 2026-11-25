@@ -883,6 +883,42 @@ class LiveSession:
                     pass                         # a malformed captured value: skip
         return self.public_state()
 
+    def set_trails(self, path: int, block: int, on: Any) -> dict:
+        """Turn a reverb/delay block's Trails (spillover) on or off — a write to
+        the fx-harness Trails param (pid 1) via ``/HarnessParamValueSet``
+        (opcode decoded from a frida capture of the Stadium app 2026-11-25, and
+        HW-confirmed: a harness-param write lands in the edit buffer).
+
+        It is a SET action, not a readable toggle: the device does NOT expose the
+        live Trails state — the edit buffer is byte-identical on/off (sfg_ AND
+        the _sbepgsm blob) and there is no ``/HarnessParamValueGet``. The device
+        only materialises Trails into the harness MODEL when the preset is saved.
+        So the editor offers On/Off and writes; it cannot show the current state.
+        Volatile until Save."""
+        pth, blk = int(path), int(block)
+        with self.cond:
+            self._require_up()
+            b = self._blocks.get((pth, blk)) if self._blocks else None
+        if b is None:
+            raise LiveError("no such block on the loaded tone "
+                            "(did the preset change?)", status=404)
+        if b.get("category") not in ("delay", "reverb"):
+            raise LiveError("Trails applies to delay and reverb blocks only.",
+                            status=400)
+        self._ensure_lease(None)
+        try:
+            with self.devlock:
+                self._require_up()
+                try:
+                    self.client.set_harness_param(pth, blk, 1, bool(on), ptype="b")
+                except (HelixError, OSError) as e:
+                    self._set_connected(False)
+                    raise LiveError(f"device Trails write failed: {e}",
+                                    status=502) from e
+        finally:
+            self.lease.done()
+        return self.public_state()
+
     def set_second_cab(self, path: int, block: int, model_id: int) -> dict:
         """Place or replace the dual-cab SECOND cab at a cab block's slot — the
         app's "Dual" cab — via ``/ModelSet`` with ``sub=1`` (HW-confirmed

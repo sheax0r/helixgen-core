@@ -1361,6 +1361,21 @@ function blockEl(b) {
       "Converting to " + to + "…");
     hd.append(ms);
   }
+  // Trails (spillover) SET control for reverb/delay — a write to the fx-harness
+  // Trails param. The device doesn't expose the live state, so this is On/Off
+  // set buttons, not a stateful toggle (see /trails).
+  if (b.trails_capable) {
+    const wrap = el("span", "trailsset"); wrap.title =
+      "Trails (reverb/delay spillover). The device doesn't report the current state, so this just sets it.";
+    wrap.append(el("span", "tlab", "Trails"));
+    ["On", "Off"].forEach((lab) => {
+      const tb = el("button", "splitbtn", lab); tb.type = "button";
+      tb.onclick = () => structSend("/trails",
+        { path: b.path, block: b.block, on: lab === "On" }, "Trails " + lab + "…");
+      wrap.append(tb);
+    });
+    hd.append(wrap);
+  }
   // copy this block to the paste clipboard (model + params + bypass + 2nd cab).
   // Paste (header button) appends a duplicate on the focused path.
   if (!STRUCT.has(b.category) && b.category !== "input" && b.category !== "output") {
