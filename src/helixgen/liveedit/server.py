@@ -93,6 +93,10 @@ def _route(session: LiveSession, path: str, b: dict):
                                   _int(b, "model_id"))
     if path == "/convert-mono-stereo":
         return session.convert_mono_stereo(_int(b, "path"), _int(b, "block"))
+    if path == "/trails":
+        if not isinstance(b.get("on"), bool):
+            raise LiveError("field 'on' must be true or false")
+        return session.set_trails(_int(b, "path"), _int(b, "block"), b["on"])
     if path == "/add-block":
         return session.add_block(_int(b, "path"), _int(b, "model_id"))
     if path == "/paste-block":
