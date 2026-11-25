@@ -282,6 +282,19 @@ def test_add_split_rejects_a_second_split_when_its_lane_b_slot_is_taken():
         h.add_split(0, 5)
 
 
+def test_add_split_rejects_a_second_split_before_a_later_split_node():
+    h = HelixClient("10.0.0.99")
+    # split@2/join@3 section, series@5, then an OUTPUT split@8 (splits to two
+    # outputs, NO join). A split at 5 is past join@3 but BEFORE split@8 — its
+    # later-shift would move split@8 and break its wiring. Must refuse (the
+    # guard counts split columns, not just joins).
+    h.read_edit_buffer = lambda **k: _flow_m(
+        {0: 770, 1: 758, 2: 475, 3: 478, 5: 310, 8: 475, 13: 783, 16: 425, 22: 783, 27: 785})
+    _wire(h)
+    with pytest.raises(HelixError):
+        h.add_split(0, 5)
+
+
 def test_add_split_rejects_no_block_there():
     h = HelixClient("10.0.0.99")
     h.read_edit_buffer = lambda **k: _flow(0, 1, 13)  # nothing at slot 2

@@ -2568,25 +2568,25 @@ function render() {
   // the device re-validates via add_split — this just offers the handle.
   SPLIT2_SLOTS = new Map();
   S.paths.forEach((p) => {
-    const joins = [], occupied = new Set();
+    const nodes = [], occupied = new Set();        // nodes = ALL split/join columns
     const scan = (segs) => (segs || []).forEach((s) => {
       if (s.kind === "block") occupied.add(s.block.block);
       else {
-        if (s.split) occupied.add(s.split.block);
-        if (s.join) { occupied.add(s.join.block); joins.push(s.join.block); }
+        if (s.split) { occupied.add(s.split.block); nodes.push(s.split.block); }
+        if (s.join) { occupied.add(s.join.block); nodes.push(s.join.block); }
         (s.b || []).forEach((x) => x.kind === "block" && occupied.add(x.block.block));
         (s.a || []).forEach((x) => x.kind === "block" && occupied.add(x.block.block));
       }
     });
     scan(p.segments); scan(p.extra);
-    if (!joins.length) return;                       // no split here (first-split path)
-    const lastJoin = Math.max.apply(null, joins);
+    if (!nodes.length) return;                       // no section here (first-split path)
+    const lastNode = Math.max.apply(null, nodes);    // past the LAST split/join (matches add_split)
     const ok = new Set();
     (p.segments || []).forEach((s) => {
       const b = s.kind === "block" ? s.block : null;
       if (b && b.row === 0 && !STRUCT.has(b.category)
           && b.category !== "input" && b.category !== "output"
-          && b.block >= 1 && b.block <= 11 && b.block > lastJoin && !b.xlink
+          && b.block >= 1 && b.block <= 11 && b.block > lastNode && !b.xlink
           && !occupied.has(b.block + 14) && !occupied.has(b.block + 15)) ok.add(b.block);
     });
     if (ok.size) SPLIT2_SLOTS.set(p.path, ok);

@@ -1563,16 +1563,22 @@ class HelixClient:
             m = raw.get("mdls") if isinstance(raw, dict) else None
             return (m[0].get("id__") if isinstance(m, list) and m
                     and isinstance(m[0], dict) else None)
-        joins = sorted(s for s, raw in self._blks_pairs(flow[p])
-                       if _model_at(raw) == _agenda.JOIN_MODEL)
+        # ALL routing nodes (splits AND joins), not just joins: the new split
+        # must sit past every existing section so (a) it can't nest and (b) the
+        # +1 lane-A shift of later blocks never moves an existing split/join node
+        # (which would break its bblk wiring). A split with no join — e.g. an
+        # output split to two outputs — is caught here precisely because its
+        # column is counted even though it has no join.
+        nodes = sorted(s for s, raw in self._blks_pairs(flow[p])
+                       if _model_at(raw) in (_agenda.SPLIT_MODEL, _agenda.JOIN_MODEL))
         lane_b = col + _agenda.LANE_B_OFFSET
         if any(_agenda.LANE_B_OFFSET < s < 27 for s in occupied):   # a section exists
-            if not joins or col <= max(joins):
+            if not nodes or col <= max(nodes):
                 raise HelixError(
-                    "a 2nd parallel split must come after the existing section "
-                    "— split a block that sits past the last join on the main "
-                    "path (the 2-row grid runs parallel sections in series, not "
-                    "nested)")
+                    "a 2nd parallel split must come after the existing "
+                    "section(s) — split a block past the last split/join on the "
+                    "main path (the grid runs parallel sections in series, not "
+                    "nested, and the shift must not disturb a routing node)")
             if lane_b in occupied or (lane_b + 1) in occupied:
                 raise HelixError(
                     f"no room on lane B for the split (slots {lane_b}/"
