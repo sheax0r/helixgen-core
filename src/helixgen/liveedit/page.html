@@ -471,7 +471,7 @@ body.pane-other #focus{display:none}
   body.has-panes:not(.pane-other) #rig{flex:1 1 auto;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 300px 340px;align-items:stretch}
   body.has-panes:not(.pane-other) #canvascol{min-width:0;min-height:0;overflow:auto;padding-right:10px}
   body.has-panes:not(.pane-other) #modelpane{min-height:0;max-height:none}
-  body.has-panes:not(.pane-other) #focus{margin-top:0;border-top:0;padding-top:0;border-left:1px solid var(--edge2);padding:14px 2px 14px 16px;overflow:auto;min-height:0}
+  body.has-panes:not(.pane-other) #focus{margin-top:0;border-top:0;border-left:1px solid var(--edge2);padding:14px 2px 14px 16px;overflow:auto;min-height:0}
   body.has-panes:not(.pane-other) #modelpane .browser{max-height:none;height:100%}
 }
 #drawer h3{margin:14px 0 6px;font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--faint)}
@@ -1567,7 +1567,7 @@ function renderFocus() {
   fp.textContent = "";
   P.clear(); B.clear();           // only the focused block registers controls (onMsg patches the rest from BLOCKS)
   const b = SEL && BLOCKS.get(SEL);
-  if (!b) { fp.append(el("p", "focus-empty", "Select a block above to edit it.")); return; }
+  if (!b) { fp.append(el("p", "focus-empty", "Select a block to edit it.")); return; }
   fp.append(blockEl(b));          // the full card — every control, lens and action
   applyHighlight();               // the freshly-built controls need their highlight classes
 }
@@ -2691,7 +2691,7 @@ function render() {
     }
     canvas.append(sec);
   });
-  canvas.append(el("p", "hint", "Click a block to edit it below · drag within a lane to reorder, or onto the parallel zone to split"));
+  canvas.append(el("p", "hint", "Click a block to edit it · drag within a lane to reorder, or onto the parallel zone to split"));
   col.append(canvas);
   renderFocus();                  // builds the selected block's full controls into the (static) #focus pane
   if (fkey) {                     // a re-render must not throw the keyboard user out
@@ -3491,10 +3491,12 @@ async function mountModelPane() {            // persistent center-right pane (S3
   const host = el("div", "modelpane-body"); pane.append(host);
   buildModelBrowser(host, (m, pickedCat) => {
     const s = SEL && BLOCKS.get(SEL);                          // read the live selection at click time
+    // structSend, not send: the persistent pane doesn't close on pick, so it
+    // needs the one-in-flight gate to stop a double-click adding two blocks.
     if (PANE_EDITABLE(s) && pickedCat === s.category) {
-      send("/swap", { path: s.path, block: s.block, model_id: m.id }, () => toast("Swapping model…", true), () => {});
+      structSend("/swap", { path: s.path, block: s.block, model_id: m.id }, "Swapping model…");
     } else {
-      send("/add-block", { path: s ? s.path : 0, model_id: m.id }, () => toast("Adding block…", true), () => {});
+      structSend("/add-block", { path: s ? s.path : 0, model_id: m.id }, "Adding block…");
     }
   }, cat);
 }
