@@ -222,34 +222,40 @@ body.seeking .adjlegend{display:inline-flex}
 
 /* ---------- rig ---------- */
 main{max-width:1040px;margin:0 auto;padding:22px 20px}
+#flowcanvas{overflow-x:auto;overflow-y:hidden;padding-bottom:8px}
 .path{margin-bottom:44px}
 .path-hd{display:flex;align-items:center;gap:12px;margin:0 0 14px}
 .path-hd b{font-size:12px;letter-spacing:.22em;text-transform:uppercase;color:#9fb4ff}
 .path-hd i{flex:1;height:1px;background:linear-gradient(90deg,var(--edge2),transparent)}
-.col{display:flex;flex-direction:column;min-width:0}
-.wire{align-self:center;width:4px;height:var(--wireh);border-radius:2px;flex:none;
+/* horizontal signal flow (Stadium parity): the chain runs left->right, parallel
+ * lanes stack vertically, connectors redrawn in the new orientation. .col is the
+ * row primitive (main chain, the .par split section, and each lane all use it). */
+.col{display:flex;flex-direction:row;align-items:center;min-width:0}
+.col>*{flex-shrink:0}            /* a horizontal chain scrolls; blocks keep natural width, never squash */
+.wire{align-self:center;height:4px;width:var(--wireh);border-radius:2px;flex:none;
   background:linear-gradient(var(--wire),var(--wire));box-shadow:0 0 10px var(--wire-glow);position:relative}
-.wire::after{content:"";position:absolute;left:50%;bottom:-1px;transform:translateX(-50%);
-  border:6px solid transparent;border-top:8px solid var(--wire);border-bottom:0}
-.fill{align-self:center;width:4px;flex:1;min-height:var(--wireh);border-radius:2px;
+.wire::after{content:"";position:absolute;top:50%;right:-1px;transform:translateY(-50%);
+  border:6px solid transparent;border-left:8px solid var(--wire);border-right:0}
+.fill{align-self:center;height:4px;flex:1;min-width:var(--wireh);border-radius:2px;
   background:var(--wire);box-shadow:0 0 10px var(--wire-glow)}
 .empty-lane{align-self:center;font-size:10px;letter-spacing:.14em;text-transform:uppercase;
-  color:var(--faint);padding:2px 0}
+  color:var(--faint);padding:0 10px;white-space:nowrap}
 
-/* fork / merge connectors: one centre line opening to (or closing from) two lanes */
-.fork,.merge{position:relative;height:calc(var(--wireh) + 8px);flex:none}
+/* fork / merge connectors: one centre line opening to (or closing from) two
+ * stacked lanes — a vertical span at mid-width with horizontal stubs to each lane */
+.fork,.merge{position:relative;width:calc(var(--wireh) + 8px);align-self:stretch;flex:none}
 .fork i,.merge i{position:absolute;background:var(--wire);box-shadow:0 0 10px var(--wire-glow);border-radius:2px}
-.fork .c,.merge .c{left:calc(50% - 2px);width:4px;height:50%}
-.fork .c{top:0} .merge .c{bottom:0}
-.fork .h,.merge .h{left:calc((100% - var(--gap))/4);right:calc((100% - var(--gap))/4);height:4px;top:calc(50% - 2px)}
-.fork .l,.fork .r,.merge .l,.merge .r{width:4px;height:50%}
-.fork .l,.merge .l{left:calc((100% - var(--gap))/4 - 2px)}
-.fork .r,.merge .r{right:calc((100% - var(--gap))/4 - 2px)}
-.fork .l,.fork .r{bottom:0} .merge .l,.merge .r{top:0}
-.lanes{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:var(--gap);align-items:stretch}
-.lane{position:relative;border:1px dashed #2c3a5e;border-radius:16px;padding:26px 10px 0;background:rgba(20,28,48,.35)}
-.lane.end{padding-bottom:12px}
-.lane::before{content:"";position:absolute;top:-1px;left:calc(50% - 2px);width:4px;height:27px;
+.fork .c,.merge .c{top:calc(50% - 2px);height:4px;width:50%}
+.fork .c{left:0} .merge .c{right:0}
+.fork .h,.merge .h{top:calc((100% - var(--gap))/4);bottom:calc((100% - var(--gap))/4);width:4px;left:calc(50% - 2px)}
+.fork .l,.fork .r,.merge .l,.merge .r{height:4px;width:50%}
+.fork .l,.merge .l{top:calc((100% - var(--gap))/4 - 2px)}
+.fork .r,.merge .r{bottom:calc((100% - var(--gap))/4 - 2px)}
+.fork .l,.fork .r{right:0} .merge .l,.merge .r{left:0}
+.lanes{display:flex;flex-direction:column;gap:var(--gap);align-self:stretch;justify-content:center}
+.lane{position:relative;border:1px dashed #2c3a5e;border-radius:16px;padding:24px 12px 10px 16px;background:rgba(20,28,48,.35)}
+.lane.end{padding-right:12px}
+.lane::before{content:"";position:absolute;left:-1px;top:calc(50% - 2px);height:4px;width:17px;
   background:var(--wire);box-shadow:0 0 10px var(--wire-glow)}
 .lane-tag{position:absolute;top:6px;left:12px;font-size:10px;font-weight:800;letter-spacing:.2em;color:#7f9bff}
 .lane.b .lane-tag{color:#ffb37a}

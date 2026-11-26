@@ -40,3 +40,4 @@ build/
 *.db
 .beads-credential-key
 .beads/proxieddb/
+.superpowers/
