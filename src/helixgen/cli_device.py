@@ -4971,7 +4971,9 @@ def device_live(http_port: int, no_open: bool, force_browser: bool,
     reconcile the two — copy a tone to the device, pull a device preset back
     into the library, manage setlists, push / rename / delete IRs. Edit on a
     drawer row loads that tone and follows it in the chain editor. Diff badges
-    are cached per device and refreshed in the background.
+    are cached per device and refreshed in the background. On a wide window the
+    browser is a PERSISTENT left pane (Stadium's preset column); below that the
+    slide-out drawer is the fallback.
 
     OFFLINE COLD START: the page binds and serves with NO device present — the
     chain shows disconnected, the drawer's computer side (browse, search,
