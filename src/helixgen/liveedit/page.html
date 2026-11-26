@@ -460,6 +460,20 @@ body.pane-other #focus{display:none}
   body.has-left>#leftpane{grid-column:1;grid-row:2;min-height:0}
   body.has-left>#workarea{grid-column:2;grid-row:2;min-width:0;min-height:0;overflow:auto}
 }
+/* S3 four-pane shell: on a wide window the flow view is [canvas | model | knob].
+ * #rig holds #canvascol + #modelpane + #focus; narrow, they stack (dock below). */
+#modelpane{min-width:0;overflow:auto;border-left:1px solid var(--edge2);padding:14px}
+#modelpane[hidden]{display:none}
+.pane-hd{margin:0 0 10px;font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--faint)}
+@media (min-width:1340px){
+  /* fill the viewport: chrome on top, the three panes fill the rest and scroll on their own */
+  body.has-panes:not(.pane-other) #workarea{display:flex;flex-direction:column;min-height:0;overflow:hidden}
+  body.has-panes:not(.pane-other) #rig{flex:1 1 auto;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 300px 340px;align-items:stretch}
+  body.has-panes:not(.pane-other) #canvascol{min-width:0;min-height:0;overflow:auto;padding-right:10px}
+  body.has-panes:not(.pane-other) #modelpane{min-height:0;max-height:none}
+  body.has-panes:not(.pane-other) #focus{margin-top:0;border-top:0;border-left:1px solid var(--edge2);padding:14px 2px 14px 16px;overflow:auto;min-height:0}
+  body.has-panes:not(.pane-other) #modelpane .browser{max-height:none;height:100%}
+}
 #drawer h3{margin:14px 0 6px;font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--faint)}
 .ltone{border:1px solid var(--edge);border-radius:10px;padding:8px 10px;margin-bottom:8px;background:var(--panel2)}
 .ltone .nm{font-weight:600}
@@ -581,7 +595,7 @@ body.pane-other #focus{display:none}
   <span class="adjlegend"><b class="lg-up">↑ turn up for more</b><b class="lg-down">↓ turn down for more</b></span>
 </div>
 <nav class="tabs" id="tabs" hidden aria-label="Editor panes"></nav>
-<main id="rig" class="pane"></main>
+<main id="rig" class="pane"><div id="canvascol"></div><aside id="modelpane" hidden aria-label="Model browser"></aside><div id="focus"></div></main>
 <section class="pane" id="devicepane" hidden aria-label="Device global settings">
   <div class="dhead">
     <div><h2 class="dtitle">Global Settings</h2>
@@ -1553,7 +1567,7 @@ function renderFocus() {
   fp.textContent = "";
   P.clear(); B.clear();           // only the focused block registers controls (onMsg patches the rest from BLOCKS)
   const b = SEL && BLOCKS.get(SEL);
-  if (!b) { fp.append(el("p", "focus-empty", "Select a block above to edit it.")); return; }
+  if (!b) { fp.append(el("p", "focus-empty", "Select a block to edit it.")); return; }
   fp.append(blockEl(b));          // the full card — every control, lens and action
   applyHighlight();               // the freshly-built controls need their highlight classes
 }
@@ -2561,8 +2575,8 @@ function render() {
   const fkey = focused && focused.dataset.k;
   P.clear(); B.clear(); BLOCKS.clear(); dragging = null; lensLock = null;
   const prevScroll = (($("flowcanvas") || {}).scrollLeft) || 0;   // the canvas scrolls internally now — a full rebuild must not snap a long chain back to the start
-  const rig = $("rig"); rig.textContent = "";
-  if (!S.paths.length) { SEL = null; rig.append(el("p", "hint", "No tone is loaded on the device.")); return; }
+  const rig = $("rig"), col = $("canvascol"); col.textContent = "";   // rebuild only the canvas column; #modelpane + #focus persist (S3 panes)
+  if (!S.paths.length) { SEL = null; col.append(el("p", "hint", "No tone is loaded on the device.")); renderFocus(); return; }
   (function indexBlocks() {       // index every block for selection + live-event patching
     const add = (b) => { if (b) BLOCKS.set(b.path + "/" + b.block, b); };
     const walk = (segs) => (segs || []).forEach((s) => {
@@ -2677,10 +2691,9 @@ function render() {
     }
     canvas.append(sec);
   });
-  canvas.append(el("p", "hint", "Click a block to edit it below · drag within a lane to reorder, or onto the parallel zone to split"));
-  rig.append(canvas);
-  const fp = el("div"); fp.id = "focus"; rig.append(fp);
-  renderFocus();                  // builds the selected block's full controls into #focus
+  canvas.append(el("p", "hint", "Click a block to edit it · drag within a lane to reorder, or onto the parallel zone to split"));
+  col.append(canvas);
+  renderFocus();                  // builds the selected block's full controls into the (static) #focus pane
   if (fkey) {                     // a re-render must not throw the keyboard user out
     const again = [...rig.querySelectorAll("[data-k]")].find((n) => n.dataset.k === fkey);
     const target = again && (again.matches("[tabindex],button") ? again : again.querySelector("button,select"));
@@ -3275,6 +3288,22 @@ function syncShell() {                          // follow the viewport across th
 }
 wideMQ.addEventListener("change", syncShell);
 syncShell();                                    // set the initial shell for this width
+/* S3: on a WIDER window, promote the model browser + knob editor to persistent
+ * panes -> the full four-pane shell [preset | canvas | model | knob]. Below this
+ * (but above the S2 breakpoint) it's left pane + canvas + focus dock; narrower
+ * still, today's drawer/tab/dock/+Add-popup. */
+let MODELS = null;                              // offline model catalog, loaded once by ensureModels()
+const panesMQ = (typeof matchMedia === "function") ? matchMedia("(min-width: 1340px)")
+  : { matches: false, addEventListener() {} };
+function syncPanes() {
+  const on = panesMQ.matches;
+  document.body.classList.toggle("has-panes", on);
+  $("modelpane").hidden = !on;
+  if (on) mountModelPane();                      // the knob pane (#focus) is already filled by renderFocus()
+}
+panesMQ.addEventListener("change", syncPanes);
+// NB: the initial syncPanes() runs at the very end of the script (mountModelPane
+// touches consts declared below, so it can't fire during this block's TDZ).
 // deltas pushed over SSE: update in place, never re-render (keeps scroll)
 function onDrawerDelta(m) {
   if (m.kind === "badge") { const v = LIBV.get(m.cid); if (v) setBadge(v.badge, m.diff); }
@@ -3352,7 +3381,6 @@ async function openPicker() {
   if (!any) body.append(el("p", null, "No presets on the device."));
 }
 /* ---------- model picker (hgc-cc4: swap a block for a same-category model) ---------- */
-let MODELS = null;
 async function openModelPicker(b) {
   if (down) return;
   if (!MODELS) {
@@ -3400,25 +3428,25 @@ async function openSecondCabPicker(b, currentId) {
 }
 /* ---------- add-block picker (append any-category model to a path) ---------- */
 const ADD_SKIP = new Set(["input", "output", "split", "join", "none", "harness"]);
-async function openAddPicker(path) {
-  if (down) return;
-  if (!MODELS) {
-    // don't cache a FAILED or error response — keep MODELS null so a later open retries
-    const r = await fetch("/models").then((x) => (x.ok ? x.json() : null)).catch(() => null);
-    if (!r || r.error || typeof r !== "object") { const { body } = modal("Add block"); body.append(el("p", null, "Could not load the model list — try again.")); return; }
-    MODELS = r;
-  }
-  const { body } = modal("Add a block to Path " + (path + 1));
+async function ensureModels() {              // load the offline model catalog once (never cache a failure)
+  if (MODELS) return true;
+  const r = await fetch("/models").then((x) => (x.ok ? x.json() : null)).catch(() => null);
+  if (!r || r.error || typeof r !== "object") return false;
+  MODELS = r; return true;
+}
+// Shared category-rail + model-list browser (the modal + the persistent pane use it).
+// onPick(model, category) does the add/swap; initialCat opens on that category.
+function buildModelBrowser(container, onPick, initialCat) {
   const cats = Object.keys(MODELS)
     .filter((c) => !ADD_SKIP.has(c) && (MODELS[c] || []).length)
     .sort((a, b) => catRank(a) - catRank(b) || a.localeCompare(b));
-  if (!cats.length) { body.append(el("p", null, "No models available to add.")); return; }
-  body.append(el("p", "hint", "Appended to this path — the device applies the model's defaults. Volatile until Save."));
+  container.textContent = "";
+  if (!cats.length) { container.append(el("p", "hint", "No models available.")); return; }
   const wrap = el("div", "browser"), rail = el("div", "cat-rail"), main = el("div", "cat-main");
   const filter = el("input", "cat-filter"); filter.type = "text"; filter.placeholder = "Search models…";
   const listWrap = el("div", "cat-list");
-  main.append(filter, listWrap); wrap.append(rail, main); body.append(wrap);
-  let activeCat = cats[0];
+  main.append(filter, listWrap); wrap.append(rail, main); container.append(wrap);
+  let activeCat = (initialCat && cats.includes(initialCat)) ? initialCat : cats[0];
   const renderList = () => {
     listWrap.textContent = "";
     const q = filter.value.trim().toLowerCase();
@@ -3426,9 +3454,7 @@ async function openAddPicker(path) {
     if (!items.length) { listWrap.append(el("p", "hint", "No matching models.")); return; }
     items.forEach((m) => {
       const btn = el("button", "pz", m.name); btn.type = "button";
-      btn.onclick = () => { closeOverlay();
-        send("/add-block", { path: path, model_id: m.id },
-          () => toast("Adding block on the device…", true), () => {}); };
+      btn.onclick = () => onPick(m, activeCat);
       listWrap.append(btn);
     });
   };
@@ -3444,6 +3470,35 @@ async function openAddPicker(path) {
   });
   filter.addEventListener("input", renderList);
   renderList();
+}
+async function openAddPicker(path) {         // narrow-mode fallback: the model browser in a modal
+  if (down) return;
+  if (!(await ensureModels())) { const { body } = modal("Add block"); body.append(el("p", null, "Could not load the model list — try again.")); return; }
+  const { body } = modal("Add a block to Path " + (path + 1));
+  body.append(el("p", "hint", "Appended to this path — the device applies the model's defaults. Volatile until Save."));
+  const host = el("div"); body.append(host);
+  buildModelBrowser(host, (m) => { closeOverlay();
+    send("/add-block", { path: path, model_id: m.id }, () => toast("Adding block on the device…", true), () => {}); });
+}
+const PANE_EDITABLE = (b) => b && !STRUCT.has(b.category) && b.category !== "input" && b.category !== "output";
+async function mountModelPane() {            // persistent center-right pane (S3): browse + add/swap
+  const pane = $("modelpane"); if (!pane) return;
+  if (!(await ensureModels())) { pane.textContent = ""; pane.append(el("h3", "pane-hd", "Models"), el("p", "hint", "Could not load the model list.")); return; }
+  const sel = SEL && BLOCKS.get(SEL);
+  const cat = PANE_EDITABLE(sel) ? sel.category : null;        // open on the selected block's category
+  pane.textContent = "";
+  pane.append(el("h3", "pane-hd", "Add or swap a block"));
+  const host = el("div", "modelpane-body"); pane.append(host);
+  buildModelBrowser(host, (m, pickedCat) => {
+    const s = SEL && BLOCKS.get(SEL);                          // read the live selection at click time
+    // structSend, not send: the persistent pane doesn't close on pick, so it
+    // needs the one-in-flight gate to stop a double-click adding two blocks.
+    if (PANE_EDITABLE(s) && pickedCat === s.category) {
+      structSend("/swap", { path: s.path, block: s.block, model_id: m.id }, "Swapping model…");
+    } else {
+      structSend("/add-block", { path: s ? s.path : 0, model_id: m.id }, "Adding block…");
+    }
+  }, cat);
 }
 addEventListener("keydown", (ev) => { if (ev.key === "Escape") closeOverlay(); });
 $("load").onclick = openPicker;
@@ -3475,6 +3530,7 @@ $("save").onclick = async () => {
   send("/save", {}, (j) => toast("Saved “" + (j.saved || "preset") + "” on the device", true), () => {});
 };
 setDown(true, "Connecting…");
+syncPanes();        // now that MODELS / PANE_EDITABLE etc. are initialized, set the initial pane shell
 connect();
 </script>
 </body>

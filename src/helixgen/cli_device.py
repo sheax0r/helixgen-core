@@ -4921,6 +4921,9 @@ def device_live(http_port: int, no_open: bool, force_browser: bool,
     right — every block of every DSP path, inputs and outputs included,
     parallel sections as stacked lanes between their split and merge — with
     each parameter as a knob, switch or list and a bypass switch per block.
+    On a wide window it is a four-pane Stadium-style shell (preset browser |
+    horizontal canvas | model browser | knob editor); narrower, the model
+    browser and knob editor collapse to the +Add popup and the focus dock.
 
     LONG-RUNNING: serves http://127.0.0.1:<port>/ until interrupted (Ctrl-C
     or SIGTERM). The first line printed is `live editor: <url>`. An agent

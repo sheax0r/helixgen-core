@@ -1147,6 +1147,47 @@ const drag = (k, id, ...ys) => { k.svg.fire("pointerdown", { button: 0, clientY:
       leftTones === 1 && drawerTones === 0, "left=" + leftTones + " drawer=" + drawerTones);
   }
 
+  { // S49: the persistent model pane (wide / 4-pane) ADDS a model to the selected
+    //       block's path, and SWAPS when the picked model is the selected block's
+    //       own category — reusing the existing /add-block + /swap endpoints.
+    const x = boot();
+    x.sse(State([Blk({ block: 1, category: "amp", model: "HD2_A", name: "Amp" }, [P_({})])]));
+    x.setWide(true);                                  // the harness mq flips both breakpoints -> has-panes
+    const mreq = x.posts.find((p) => p.url === "/models");
+    ok("S49 the model pane fetches the catalog", !!mreq, "no /models fetch");
+    mreq.reply(200, { amp: [{ id: "HD2_B", name: "Brit Plexi" }], delay: [{ id: "HD2_D", name: "Tape" }] });
+    await x.tick();
+    const models = x.ids.modelpane.find((e) => e.tagName === "button" && e._cls && e._cls.has("pz"));
+    ok("S49 the model pane lists models", models.length >= 1, "no model buttons");
+    // selected block is an amp; the pane opens on the amp category -> picking an amp SWAPS it
+    const brit = models.find((b) => b.textContent === "Brit Plexi");
+    brit.onclick();
+    const swap = x.posts.find((p) => p.url === "/swap");
+    ok("S49 a same-category pick swaps the selected block", !!swap && swap.body.block === 1 && swap.body.model_id === "HD2_B", JSON.stringify(swap && swap.body));
+    swap.reply(200, { ok: true }); await x.tick();   // clear structBusy (structural edits are serialized)
+    // switch to the delay category and pick -> ADD to the selected block's path (0)
+    const delayTab = x.ids.modelpane.find((e) => e._cls && e._cls.has("cat-tab")).find((t) => t.textContent.toLowerCase().includes("delay"));
+    delayTab.onclick();
+    const tape = x.ids.modelpane.find((e) => e.tagName === "button" && e._cls && e._cls.has("pz")).find((b) => b.textContent === "Tape");
+    tape.onclick();
+    const add = x.posts.find((p) => p.url === "/add-block");
+    ok("S49 a different-category pick adds to the selected block's path", !!add && add.body.path === 0 && add.body.model_id === "HD2_D", JSON.stringify(add && add.body));
+  }
+
+  { // S50: the persistent model pane serializes structural edits (structBusy) —
+    //       an accidental double-click must not append TWO blocks. Every other
+    //       structural edit routes through structSend; the pane must too.
+    const x = boot();
+    x.sse(State([Blk({ block: 1, category: "amp", name: "Amp" }, [P_({})])]));
+    x.setWide(true);
+    x.posts.find((p) => p.url === "/models").reply(200, { delay: [{ id: "HD2_D", name: "Tape" }] });
+    await x.tick();
+    const tape = x.ids.modelpane.find((e) => e.tagName === "button" && e._cls && e._cls.has("pz")).find((b) => b.textContent === "Tape");
+    tape.onclick(); tape.onclick();               // double-click before the first add's re-render lands
+    const adds = x.posts.filter((p) => p.url === "/add-block");
+    ok("S50 a double-click in the model pane fires only ONE add", adds.length === 1, "add count=" + adds.length);
+  }
+
   console.log(fails ? `\n${fails} FAILED` : "\nall page scenarios pass");
   process.exit(fails ? 1 : 0);
 })();

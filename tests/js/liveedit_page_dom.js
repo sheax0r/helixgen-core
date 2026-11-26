@@ -70,7 +70,7 @@ function boot() {
   const ids = {}; El.body = new El("body");
   ["led", "preset", "snap", "undo", "redo", "paste", "knobview", "reread", "save", "load", "banner", "snaprow", "rig", "toasts",
    "adjsearch", "adjlist", "adjhint", "libtoggle", "drawer", "drawerbody", "tabs",
-   "leftpane", "leftbody", "workarea",
+   "leftpane", "leftbody", "workarea", "canvascol", "modelpane", "focus",
    "devicepane", "devtabs", "devnote", "devbody", "devrefresh",
    "ctlpane", "ctlbody", "ctlrefresh", "ctlassign",
    "mixerpane", "mxtabs", "mxbody", "mxrefresh",
@@ -79,7 +79,11 @@ function boot() {
    "tunerpane", "tunerbody", "tuner-note", "tuner-needle", "tuner-pointer",
    "tuner-readout", "tuner-cents", "tuner-hz", "tuner-hint",
    "deviceinfopane", "dinfobody", "dinforefresh", "dinfonote",
-   "snappanel", "snapbody", "snapclose"].forEach((i) => { ids[i] = new El("div"); El.body.append(ids[i]); });
+   "snappanel", "snapbody", "snapclose"].forEach((i) => { ids[i] = new El("div"); ids[i].id = i; El.body.append(ids[i]); });
+  // the real page nests these inside #rig; mirror that so knobOf (searches #rig) finds focus-pane knobs
+  ["canvascol", "modelpane", "focus"].forEach((k) => {
+    El.body.children = El.body.children.filter((c) => c !== ids[k]); ids.rig.append(ids[k]);
+  });
   const document = { get body2(){return El.body}, getElementById: (i) => ids[i] || El.body.find((e) => e.id === i)[0] || null, createElement: (t) => new El(t), createElementNS: (n, t) => new El(t),
     createTextNode: (s) => { const t = new El("#text"); t._text = s; return t; }, body: El.body, title: "" };
   const win = {}; const posts = []; const toasts = ids.toasts; let es = null;
