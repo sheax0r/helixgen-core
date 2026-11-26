@@ -252,7 +252,7 @@ main{max-width:1040px;margin:0 auto;padding:22px 20px}
 .fork .l,.merge .l{top:calc((100% - var(--gap))/4 - 2px)}
 .fork .r,.merge .r{bottom:calc((100% - var(--gap))/4 - 2px)}
 .fork .l,.fork .r{right:0} .merge .l,.merge .r{left:0}
-.lanes{display:flex;flex-direction:column;gap:var(--gap);align-self:stretch;justify-content:center}
+.lanes{display:grid;grid-template-rows:minmax(0,1fr) minmax(0,1fr);gap:var(--gap);align-self:stretch}
 .lane{position:relative;border:1px dashed #2c3a5e;border-radius:16px;padding:24px 12px 10px 16px;background:rgba(20,28,48,.35)}
 .lane.end{padding-right:12px}
 .lane::before{content:"";position:absolute;left:-1px;top:calc(50% - 2px);height:4px;width:17px;
@@ -400,14 +400,14 @@ body.down main{opacity:.55}
 .tile .ti-meter-fill{position:absolute;left:0;top:0;bottom:0;width:0;background:linear-gradient(90deg,var(--ok),#e8d44b 80%,#ffcf4a);transition:width .08s linear}
 .tile .ti-meter.clip .ti-meter-fill{background:var(--bad);width:100%!important}
 .tile.drag{opacity:.4}
-.tile.dropbefore{box-shadow:0 -3px 0 0 var(--wire),0 4px 14px rgba(0,0,0,.3)}
+.tile.dropbefore{box-shadow:-3px 0 0 0 var(--wire),0 4px 14px rgba(0,0,0,.3)}  /* horizontal flow: "insert before" is the LEFT edge */
 .splitzone,.lanebzone{display:none;align-self:center;width:min(340px,100%);margin-top:36px;padding:11px 12px;
   border:1px dashed #5b8cff;border-radius:12px;color:var(--faint);font-size:12px;text-align:center;background:rgba(91,140,255,.06)}
 .lanebzone{margin-top:14px}
 .splitzone.armed,.lanebzone.armed{display:block}
 .splitzone span,.lanebzone span{pointer-events:none}
 .splitzone.over,.lanebzone.over{border-style:solid;color:var(--ink);background:rgba(91,140,255,.18);box-shadow:0 0 0 2px #5b8cff}
-.tile.dropafter{box-shadow:0 3px 0 0 var(--wire),0 4px 14px rgba(0,0,0,.3)}
+.tile.dropafter{box-shadow:3px 0 0 0 var(--wire),0 4px 14px rgba(0,0,0,.3)}   /* horizontal flow: "insert after" is the RIGHT edge */
 /* tile adjective-search highlight (block-level glow + arrow) */
 .tile.hl-on{box-shadow:0 0 0 2px var(--wire),0 0 15px var(--wire-glow)}
 .tile.hl-up{box-shadow:0 0 0 2px var(--up),0 0 15px var(--up-glow)}
@@ -2543,6 +2543,7 @@ function render() {
   const focused = document.activeElement && document.activeElement.closest && document.activeElement.closest("[data-k]");
   const fkey = focused && focused.dataset.k;
   P.clear(); B.clear(); BLOCKS.clear(); dragging = null; lensLock = null;
+  const prevScroll = (($("flowcanvas") || {}).scrollLeft) || 0;   // the canvas scrolls internally now — a full rebuild must not snap a long chain back to the start
   const rig = $("rig"); rig.textContent = "";
   if (!S.paths.length) { SEL = null; rig.append(el("p", "hint", "No tone is loaded on the device.")); return; }
   (function indexBlocks() {       // index every block for selection + live-event patching
@@ -2670,6 +2671,7 @@ function render() {
   }
   syncTiles();                    // tiles reflect live bypass state
   wireTileDrag(canvas);           // within-lane drag-reorder
+  canvas.scrollLeft = prevScroll; // keep the horizontal scroll across the rebuild (the browser clamps if the chain shrank)
 }
 
 /* ---------- adjective search: point at the knobs, never turn them ---------- */
