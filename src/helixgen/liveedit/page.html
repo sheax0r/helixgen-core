@@ -446,6 +446,20 @@ body.pane-other #focus{display:none}
 #drawer{position:fixed;top:0;right:0;bottom:0;width:min(420px,92vw);background:var(--panel);border-left:1px solid var(--edge2);
   overflow-y:auto;z-index:20;padding:14px;box-shadow:-10px 0 30px rgba(0,0,0,.5)}
 #drawer[hidden]{display:none}
+/* S2: persistent left preset/library pane above a breakpoint; the slide-out
+ * drawer stays the narrow-window fallback. body becomes a two-column grid
+ * [leftpane | workarea] with the header spanning the top. */
+#leftpane{min-width:0;background:var(--panel);border-right:1px solid var(--edge2);padding:14px;overflow:auto}
+#leftpane[hidden]{display:none}
+/* Wide: a fixed-viewport app shell — header row + a pane row that fills the rest,
+ * each pane scrolling on its own. No sticky offset to guess at (the header is a
+ * real grid row, so the panes always start below it, whatever its height). */
+@media (min-width:1080px){
+  body.has-left{display:grid;grid-template-columns:300px minmax(0,1fr);grid-template-rows:auto minmax(0,1fr);height:100vh;overflow:hidden}
+  body.has-left>.top{grid-column:1/-1;grid-row:1}
+  body.has-left>#leftpane{grid-column:1;grid-row:2;min-height:0}
+  body.has-left>#workarea{grid-column:2;grid-row:2;min-width:0;min-height:0;overflow:auto}
+}
 #drawer h3{margin:14px 0 6px;font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--faint)}
 .ltone{border:1px solid var(--edge);border-radius:10px;padding:8px 10px;margin-bottom:8px;background:var(--panel2)}
 .ltone .nm{font-weight:600}
@@ -554,6 +568,8 @@ body.pane-other #focus{display:none}
   <button class="btn" id="reread" title="Read the whole tone from the device again">Re-read</button>
   <button class="btn save" id="save" title="Save the tone on the device (same as Save on the hardware)">Save</button>
 </header>
+<aside id="leftpane" hidden aria-label="Preset browser"><div id="leftbody"></div></aside>
+<div id="workarea">
 <p class="banner" id="banner">Device disconnected — retrying. Controls are paused.</p>
 <div class="snaprow" id="snaprow"></div>
 <div class="adjrow">
@@ -639,6 +655,7 @@ body.pane-other #focus{display:none}
   <div id="dinfobody"></div>
   <p class="dnote" id="dinfonote">Backup and restore are command-line tools (<code>helixgen device backup</code> / <code>restore</code>) — restore overwrites device content, so it stays off this panel. Firmware updates, Line 6 account, remote-access PIN and licenses live on the device's own screen, by design.</p>
 </section>
+</div><!-- /#workarea -->
 <aside id="drawer" hidden aria-label="Tone library"><div id="drawerbody"></div></aside>
 <aside id="snappanel" hidden aria-label="Snapshots">
   <div class="sphead"><h3>Snapshots</h3><button class="btn" id="snapclose" type="button" title="Close">&times;</button></div>
@@ -3055,7 +3072,7 @@ function libImportRow() {
     reader.onload = () => {
       const b64 = String(reader.result).split(",")[1] || "";   // strip the data: prefix
       send("/library/import_file", { filename: f.name, content_b64: b64 },
-        () => { inp.value = ""; toast("Imported " + f.name, true); openDrawer(); },
+        () => { inp.value = ""; toast("Imported " + f.name, true); refreshLibrary(); },
         () => { inp.value = ""; });                             // send() toasts the error
     };
     reader.onerror = () => { inp.value = ""; toast("could not read that file"); };
@@ -3112,7 +3129,7 @@ function renderUses(box, ir, u) {
 function deleteIr(ir, wrap, force) {
   if (force && !confirm("Delete this IR anyway? Referencing tones will show a silent cab.")) return;
   send("/library/delete_ir", { name_or_hash: ir.name || ir.hash, force: !!force },
-    () => openDrawer(),
+    () => refreshLibrary(),
     (j) => {   // 409 blocked (or error): surface it inline + offer force
       let bx = wrap.querySelector(".lblocked");
       if (!bx) { bx = el("div", "lblocked"); wrap.append(bx); }
@@ -3143,7 +3160,7 @@ function libIr(i) {
     const inp = el("input", "lfolderin"); inp.type = "text";
     inp.placeholder = "folder name (blank = none)"; inp.value = i.folder || "";
     const commit = () => send("/library/set_ir_folder", { hash: i.hash, folder: inp.value },
-      () => openDrawer(), () => {});   // re-render regroups; send() toasts errors
+      () => refreshLibrary(), () => {});   // re-render regroups; send() toasts errors
     inp.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); commit(); } };
     const save = el("button", "btn", "Save"); save.type = "button"; save.onclick = commit;
     fedit.append(inp, save);
@@ -3170,9 +3187,9 @@ function applyLibFilter() {
     if (!libEmptyNode.hidden) libEmptyNode.textContent = "No tones match “" + libQuery.trim() + "”";
   }
 }
-function renderLib(st) {
+function renderLib(st, body) {
   LIB = st; LIBV.clear(); LIBSL.clear();
-  const body = $("drawerbody"); body.textContent = "";
+  body = body || $("drawerbody"); body.textContent = "";   // the drawer (narrow) or the persistent left pane (wide)
   const names = ["Tones", "Setlists", "IRs"];
   const tabs = el("div", "ltabs"), panels = {};
   const showTab = (name) => {
@@ -3203,7 +3220,7 @@ function renderLib(st) {
     const r = el("div", "lrow"), n = el("span", null, (s.members || []).length + " tones");
     r.append(el("b", null, s.name), n);
     if (s.cid != null) LIBSL.set(s.cid, n);
-    const d = el("button", "btn", "Delete"); d.type = "button"; d.onclick = () => libAct("setlist_delete", { name: s.name }, openDrawer);
+    const d = el("button", "btn", "Delete"); d.type = "button"; d.onclick = () => libAct("setlist_delete", { name: s.name }, refreshLibrary);
     r.append(d); panels.Setlists.append(r);
   });
 
@@ -3237,6 +3254,27 @@ async function openDrawer() {
 }
 function closeDrawer() { libOpen = false; libQuery = ""; $("drawer").hidden = true; }  // fresh filter on next open
 $("libtoggle").onclick = () => (libOpen ? closeDrawer() : openDrawer());
+/* S2: above the breakpoint the library is a PERSISTENT left pane (Stadium's
+ * preset column); below it, the slide-out drawer stays the fallback. Same
+ * renderLib, two mount points — never both at once (it owns single globals). */
+const wideMQ = (typeof matchMedia === "function") ? matchMedia("(min-width: 1080px)")
+  : { matches: false, addEventListener() {} };
+async function mountLeftLibrary() {
+  try { const r = await fetch("/library/state"); renderLib(await r.json(), $("leftbody")); }
+  catch (e) { /* leave the pane empty; a later delta or re-sync fills it */ }
+}
+// Re-render the library into whichever mount is LIVE — a mutation's refresh must
+// never pop the other mount open (keeps the one-mount-at-a-time invariant; #C1).
+function refreshLibrary() { if (wideMQ.matches) mountLeftLibrary(); else if (libOpen) openDrawer(); }
+function syncShell() {                          // follow the viewport across the breakpoint
+  const wide = wideMQ.matches;
+  document.body.classList.toggle("has-left", wide);
+  $("leftpane").hidden = !wide;
+  $("libtoggle").hidden = wide;                 // the toggle is redundant while the pane is persistent
+  if (wide) { if (libOpen) closeDrawer(); mountLeftLibrary(); }
+}
+wideMQ.addEventListener("change", syncShell);
+syncShell();                                    // set the initial shell for this width
 // deltas pushed over SSE: update in place, never re-render (keeps scroll)
 function onDrawerDelta(m) {
   if (m.kind === "badge") { const v = LIBV.get(m.cid); if (v) setBadge(v.badge, m.diff); }

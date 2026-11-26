@@ -1102,6 +1102,51 @@ const drag = (k, id, ...ys) => { k.svg.fire("pointerdown", { button: 0, clientY:
     ok("S46 a full re-render restores the horizontal scroll position", cv2.scrollLeft === 500, "scrollLeft=" + cv2.scrollLeft);
   }
 
+  { // S47: above the width breakpoint the library becomes a PERSISTENT left
+    //       pane (Stadium's preset column), reusing the drawer renderer; the
+    //       now-redundant Library toggle hides. Narrowing restores the drawer.
+    const x = boot();
+    x.sse(State([Blk({}, [P_({})])]));
+    ok("S47 narrow by default: left pane hidden, toggle shown",
+      x.ids.leftpane.hidden && !x.ids.libtoggle.hidden, "leftHidden=" + x.ids.leftpane.hidden + " toggleHidden=" + x.ids.libtoggle.hidden);
+    x.setWide(true);                                     // cross the breakpoint
+    const req = x.posts.find((p) => p.url === "/library/state");
+    ok("S47 going wide fetches the library for the left pane", !!req, "no /library/state fetch");
+    req.reply(200, { tones: [{ cid: 5, name: "My Tone", hsp: "x.hsp", setlists: [] }], setlists: [], irs: [] });
+    await x.tick();
+    ok("S47 the left pane is visible when wide", !x.ids.leftpane.hidden, "leftpane hidden");
+    ok("S47 the preset list renders into the left pane",
+      x.ids.leftbody.find((e) => e._cls && e._cls.has("ltones")).length === 1, "no ltones in leftbody");
+    ok("S47 the Library toggle hides when the pane is persistent", x.ids.libtoggle.hidden, "toggle still shown");
+    x.setWide(false);                                    // narrow again -> drawer fallback
+    ok("S47 narrowing hides the left pane and restores the toggle",
+      x.ids.leftpane.hidden && !x.ids.libtoggle.hidden, "leftHidden=" + x.ids.leftpane.hidden + " toggleHidden=" + x.ids.libtoggle.hidden);
+  }
+
+  { // S48: a library mutation from the WIDE left pane must refresh THAT pane,
+    //       never pop the drawer open (the one-mount-at-a-time invariant — the
+    //       S2 review's C1, where the refresh callbacks hardcoded openDrawer).
+    const x = boot();
+    x.sse(State([Blk({}, [P_({})])]));
+    x.setWide(true);
+    x.posts.find((p) => p.url === "/library/state").reply(200,
+      { tones: [], setlists: [{ cid: 1, name: "Live", members: [] }], irs: [] });
+    await x.tick();
+    const del = x.ids.leftbody.find((e) => e.tagName === "button" && e.textContent === "Delete")[0];
+    ok("S48 the left pane shows a setlist Delete control", !!del, "no Delete button");
+    del.onclick();                                               // delete the setlist from the left pane
+    x.posts.find((p) => p.url === "/library/setlist_delete").reply(200, { ok: true });
+    await x.tick();
+    const f2 = x.posts.filter((p) => p.url === "/library/state")[1];
+    ok("S48 the mutation re-fetches the library", !!f2, "no refresh fetch");
+    f2.reply(200, { tones: [{ slug: "t", name: "T", variants: [] }], setlists: [], irs: [] });
+    await x.tick();
+    const leftTones = x.ids.leftbody.find((e) => e._cls && e._cls.has("ltones")).length;
+    const drawerTones = x.ids.drawerbody.find((e) => e._cls && e._cls.has("ltones")).length;
+    ok("S48 the refresh renders into the LEFT pane, not the drawer",
+      leftTones === 1 && drawerTones === 0, "left=" + leftTones + " drawer=" + drawerTones);
+  }
+
   console.log(fails ? `\n${fails} FAILED` : "\nall page scenarios pass");
   process.exit(fails ? 1 : 0);
 })();
