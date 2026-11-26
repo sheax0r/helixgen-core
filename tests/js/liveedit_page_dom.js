@@ -70,6 +70,7 @@ function boot() {
   const ids = {}; El.body = new El("body");
   ["led", "preset", "snap", "undo", "redo", "paste", "knobview", "reread", "save", "load", "banner", "snaprow", "rig", "toasts",
    "adjsearch", "adjlist", "adjhint", "libtoggle", "drawer", "drawerbody", "tabs",
+   "leftpane", "leftbody", "workarea",
    "devicepane", "devtabs", "devnote", "devbody", "devrefresh",
    "ctlpane", "ctlbody", "ctlrefresh", "ctlassign",
    "mixerpane", "mxtabs", "mxbody", "mxrefresh",
@@ -90,15 +91,23 @@ function boot() {
   const intervals = new Map(); let ivId = 0;
   const setInterval_ = (fn) => { const id = ++ivId; intervals.set(id, fn); return id; };
   const clearInterval_ = (id) => { intervals.delete(id); };
+  // Fake matchMedia (the persistent left preset pane mounts above a width
+  // breakpoint): a scenario flips the width with setWide() and the page's
+  // "change" listeners fire, exactly as a real viewport resize would.
+  let mediaWide = false; const mqls = [];
+  const matchMedia = (q) => ({ media: q, get matches() { return mediaWide; },
+    addEventListener: (t, f) => { if (t === "change") mqls.push(f); }, removeEventListener: () => {},
+    addListener: (f) => mqls.push(f), removeListener: () => {} });
+  const setWide = (w) => { mediaWide = !!w; mqls.slice().forEach((f) => f({ matches: mediaWide })); };
   const src = fs.readFileSync(PAGE, "utf8").split("<script>")[1].split("</script>")[0];
-  const api = new Function("document", "addEventListener", "fetch", "EventSource", "setTimeout", "setInterval", "clearInterval", "console",
+  const api = new Function("document", "addEventListener", "fetch", "EventSource", "setTimeout", "setInterval", "clearInterval", "matchMedia", "console",
     src + "\n;return {P,B,pending,onMsg,undo,redo,get undoS(){return undoS},get redoS(){return redoS},get dragging(){return dragging},get down(){return down},drained,get inflight(){return inflight},get knobview(){return KNOBVIEW},set knobview(v){KNOBVIEW=v;renderFocus()}};")(
-    document, (t, f) => (win[t] = f), fetch, EventSource, () => {}, setInterval_, clearInterval_, console);
+    document, (t, f) => (win[t] = f), fetch, EventSource, () => {}, setInterval_, clearInterval_, matchMedia, console);
   const tick = () => new Promise((r) => setImmediate(r));
   const sse = (m) => es.onmessage({ data: JSON.stringify(m) });
   const knobOf = (key) => { const root = ids.rig.find((e) => e.dataset && e.dataset.k === key)[0]; return { root, svg: root.children[0], val: root.children[1] }; };
   const tileOf = (key) => ids.rig.find((e) => e._cls.has("tile") && e.dataset && e.dataset.b === key)[0] || null;
-  return { api, ids, win, posts, sse, tick, knobOf, tileOf, toasts, document, body: El.body, intervals };
+  return { api, ids, win, posts, sse, tick, knobOf, tileOf, toasts, document, body: El.body, intervals, setWide };
 }
 const P_ = (o) => Object.assign({ pid: 1, name: "Drive", label: "Drive", type: "f", ctl: "knob", value: 0.5, min: 0, max: 1, default: 0.5,
   unit: "", scale: 10, display_min: null, display_max: null, labels: null, internal: false, snap: false }, o);
