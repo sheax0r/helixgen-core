@@ -1087,6 +1087,21 @@ const drag = (k, id, ...ys) => { k.svg.fire("pointerdown", { button: 0, clientY:
     ok("S45 a slider click that moves nothing writes nothing", x2.posts.length === 0 && x2.api.undoS.length === 0, x2.posts.length);
   }
 
+  { // S46: the horizontal canvas scrolls INTERNALLY now (the window scrolled
+    //       before). render() rebuilds #flowcanvas on every full state push, so
+    //       it must save+restore scrollLeft — else a device-follow or any edit
+    //       while scrolled right on a long chain snaps the view back to block 1.
+    const x = boot();
+    x.sse(State([Blk({ block: 1 }, [P_({})]), Blk({ block: 2 }, [P_({})]), Blk({ block: 3 }, [P_({})])]));
+    const cv1 = x.document.getElementById("flowcanvas");
+    ok("S46 the canvas exists to scroll", !!cv1, "no flowcanvas");
+    cv1.scrollLeft = 500;
+    x.sse(State([Blk({ block: 1 }, [P_({})]), Blk({ block: 2 }, [P_({})]), Blk({ block: 3 }, [P_({})])], { rev: 2 }));
+    const cv2 = x.document.getElementById("flowcanvas");
+    ok("S46 a full re-render is a NEW canvas element", cv2 && cv2 !== cv1, "same element");
+    ok("S46 a full re-render restores the horizontal scroll position", cv2.scrollLeft === 500, "scrollLeft=" + cv2.scrollLeft);
+  }
+
   console.log(fails ? `\n${fails} FAILED` : "\nall page scenarios pass");
   process.exit(fails ? 1 : 0);
 })();

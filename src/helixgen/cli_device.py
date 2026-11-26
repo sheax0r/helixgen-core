@@ -4917,10 +4917,10 @@ def device_live(http_port: int, no_open: bool, force_browser: bool,
     """Open the LIVE CHAIN EDITOR: a local browser page for dialing the ACTIVE
     tone by hand.
 
-    The page shows the loaded tone as a signal chain — every block of every
-    DSP path, inputs and outputs included, parallel sections as side-by-side
-    lanes between their split and merge — with each parameter as a knob,
-    switch or list and a bypass switch per block.
+    The page shows the loaded tone as a horizontal signal chain, left to
+    right — every block of every DSP path, inputs and outputs included,
+    parallel sections as stacked lanes between their split and merge — with
+    each parameter as a knob, switch or list and a bypass switch per block.
 
     LONG-RUNNING: serves http://127.0.0.1:<port>/ until interrupted (Ctrl-C
     or SIGTERM). The first line printed is `live editor: <url>`. An agent
