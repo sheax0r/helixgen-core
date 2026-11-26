@@ -451,11 +451,14 @@ body.pane-other #focus{display:none}
  * [leftpane | workarea] with the header spanning the top. */
 #leftpane{min-width:0;background:var(--panel);border-right:1px solid var(--edge2);padding:14px;overflow:auto}
 #leftpane[hidden]{display:none}
+/* Wide: a fixed-viewport app shell — header row + a pane row that fills the rest,
+ * each pane scrolling on its own. No sticky offset to guess at (the header is a
+ * real grid row, so the panes always start below it, whatever its height). */
 @media (min-width:1080px){
-  body.has-left{display:grid;grid-template-columns:300px minmax(0,1fr);align-items:start}
-  body.has-left>.top{grid-column:1/-1}
-  body.has-left>#leftpane{grid-column:1;position:sticky;top:var(--toph,64px);align-self:start;max-height:calc(100vh - var(--toph,64px))}
-  body.has-left>#workarea{grid-column:2;min-width:0}
+  body.has-left{display:grid;grid-template-columns:300px minmax(0,1fr);grid-template-rows:auto minmax(0,1fr);height:100vh;overflow:hidden}
+  body.has-left>.top{grid-column:1/-1;grid-row:1}
+  body.has-left>#leftpane{grid-column:1;grid-row:2;min-height:0}
+  body.has-left>#workarea{grid-column:2;grid-row:2;min-width:0;min-height:0;overflow:auto}
 }
 #drawer h3{margin:14px 0 6px;font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--faint)}
 .ltone{border:1px solid var(--edge);border-radius:10px;padding:8px 10px;margin-bottom:8px;background:var(--panel2)}
@@ -3069,7 +3072,7 @@ function libImportRow() {
     reader.onload = () => {
       const b64 = String(reader.result).split(",")[1] || "";   // strip the data: prefix
       send("/library/import_file", { filename: f.name, content_b64: b64 },
-        () => { inp.value = ""; toast("Imported " + f.name, true); openDrawer(); },
+        () => { inp.value = ""; toast("Imported " + f.name, true); refreshLibrary(); },
         () => { inp.value = ""; });                             // send() toasts the error
     };
     reader.onerror = () => { inp.value = ""; toast("could not read that file"); };
@@ -3126,7 +3129,7 @@ function renderUses(box, ir, u) {
 function deleteIr(ir, wrap, force) {
   if (force && !confirm("Delete this IR anyway? Referencing tones will show a silent cab.")) return;
   send("/library/delete_ir", { name_or_hash: ir.name || ir.hash, force: !!force },
-    () => openDrawer(),
+    () => refreshLibrary(),
     (j) => {   // 409 blocked (or error): surface it inline + offer force
       let bx = wrap.querySelector(".lblocked");
       if (!bx) { bx = el("div", "lblocked"); wrap.append(bx); }
@@ -3157,7 +3160,7 @@ function libIr(i) {
     const inp = el("input", "lfolderin"); inp.type = "text";
     inp.placeholder = "folder name (blank = none)"; inp.value = i.folder || "";
     const commit = () => send("/library/set_ir_folder", { hash: i.hash, folder: inp.value },
-      () => openDrawer(), () => {});   // re-render regroups; send() toasts errors
+      () => refreshLibrary(), () => {});   // re-render regroups; send() toasts errors
     inp.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); commit(); } };
     const save = el("button", "btn", "Save"); save.type = "button"; save.onclick = commit;
     fedit.append(inp, save);
@@ -3217,7 +3220,7 @@ function renderLib(st, body) {
     const r = el("div", "lrow"), n = el("span", null, (s.members || []).length + " tones");
     r.append(el("b", null, s.name), n);
     if (s.cid != null) LIBSL.set(s.cid, n);
-    const d = el("button", "btn", "Delete"); d.type = "button"; d.onclick = () => libAct("setlist_delete", { name: s.name }, openDrawer);
+    const d = el("button", "btn", "Delete"); d.type = "button"; d.onclick = () => libAct("setlist_delete", { name: s.name }, refreshLibrary);
     r.append(d); panels.Setlists.append(r);
   });
 
@@ -3260,6 +3263,9 @@ async function mountLeftLibrary() {
   try { const r = await fetch("/library/state"); renderLib(await r.json(), $("leftbody")); }
   catch (e) { /* leave the pane empty; a later delta or re-sync fills it */ }
 }
+// Re-render the library into whichever mount is LIVE — a mutation's refresh must
+// never pop the other mount open (keeps the one-mount-at-a-time invariant; #C1).
+function refreshLibrary() { if (wideMQ.matches) mountLeftLibrary(); else if (libOpen) openDrawer(); }
 function syncShell() {                          // follow the viewport across the breakpoint
   const wide = wideMQ.matches;
   document.body.classList.toggle("has-left", wide);
